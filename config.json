@@ -1,0 +1,15 @@
+{
+  "webhook_url": "",
+  "apps": [
+    {
+      "name": "Grindr iOS",
+      "type": "appstore",
+      "url": "https://apps.apple.com/us/app/grindr-gay-dating-chat/id319881193"
+    },
+    {
+      "name": "Spotify Android",
+      "type": "playstore",
+      "url": "https://play.google.com/store/apps/details?id=com.spotify.music&hl=en"
+    }
+  ]
+}
