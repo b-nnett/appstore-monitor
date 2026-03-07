@@ -14,6 +14,7 @@ import (
 
 type AppConfig struct {
 	WebhookURL string `json:"webhook_url"`
+	ShowFooter *bool  `json:"show_footer,omitempty"`
 	Apps       []App  `json:"apps"`
 }
 
@@ -24,6 +25,12 @@ type App struct {
 }
 
 type State map[string]string // app name -> last version
+
+type VersionInfo struct {
+	Version      string
+	ReleaseNotes string
+	IconURL      string
+}
 
 var logger *log.Logger
 
@@ -86,55 +93,126 @@ func fetch(url string) (string, int, error) {
 	return string(body), resp.StatusCode, err
 }
 
-func parseAppStoreVersion(html string) (string, error) {
-	re := regexp.MustCompile(`<h4[^>]*>Version ([^<]+)</h4>`)
-	match := re.FindStringSubmatch(html)
-	if len(match) < 2 {
-		return "", fmt.Errorf("version not found")
+// parseAppStoreURL extracts the country code and app ID from an App Store URL.
+func parseAppStoreURL(url string) (country string, appID string, err error) {
+	re := regexp.MustCompile(`apple\.com/(\w+)/app/.+/id(\d+)`)
+	match := re.FindStringSubmatch(url)
+	if len(match) < 3 {
+		return "", "", fmt.Errorf("could not parse App Store URL: %s", url)
 	}
-	return strings.TrimSpace(match[1]), nil
+	return match[1], match[2], nil
 }
 
-func parsePlayStoreVersion(html string) (string, error) {
-	// Play Store version is in a div with class "xg1aie" after "Updated on"
+// fetchAppStoreVersion uses the iTunes Lookup API to get version and release notes.
+func fetchAppStoreVersion(url string) (*VersionInfo, int, error) {
+	country, appID, err := parseAppStoreURL(url)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	apiURL := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&country=%s", appID, country)
+	body, status, err := fetch(apiURL)
+	if err != nil {
+		return nil, status, err
+	}
+
+	var result struct {
+		Results []struct {
+			Version       string `json:"version"`
+			ReleaseNotes  string `json:"releaseNotes"`
+			ArtworkURL512 string `json:"artworkUrl512"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
+		return nil, status, fmt.Errorf("failed to parse iTunes API response: %w", err)
+	}
+	if len(result.Results) == 0 {
+		return nil, status, fmt.Errorf("no results from iTunes API for app %s", appID)
+	}
+
+	return &VersionInfo{
+		Version:      result.Results[0].Version,
+		ReleaseNotes: result.Results[0].ReleaseNotes,
+		IconURL:      result.Results[0].ArtworkURL512,
+	}, status, nil
+}
+
+// fetchPlayStoreVersion scrapes the Play Store page for the "Updated on" date.
+// Release notes are not available server-side from the Play Store.
+func fetchPlayStoreVersion(url string) (*VersionInfo, int, error) {
+	body, status, err := fetch(url)
+	if err != nil {
+		return nil, status, err
+	}
+
 	re := regexp.MustCompile(`Updated on</div><div class="xg1aie">([^<]+)</div>`)
-	match := re.FindStringSubmatch(html)
+	match := re.FindStringSubmatch(body)
 	if len(match) < 2 {
-		return "", fmt.Errorf("version not found")
+		return nil, status, fmt.Errorf("version not found")
 	}
-	return strings.TrimSpace(match[1]), nil
+
+	return &VersionInfo{
+		Version: strings.TrimSpace(match[1]),
+	}, status, nil
 }
 
-func sendDiscordWebhook(webhookURL, appName, version, oldVersion, url string) error {
+func sendDiscordWebhook(cfg *AppConfig, appName string, info *VersionInfo, oldVersion, url string) error {
 	if oldVersion == "" {
 		oldVersion = "N/A"
 	}
 
+	fields := []map[string]string{
+		{
+			"name":   "New Version",
+			"value":  "`" + info.Version + "`",
+			"inline": "true",
+		},
+		{
+			"name":   "Old Version",
+			"value":  "`" + oldVersion + "`",
+			"inline": "true",
+		},
+	}
+
+	if info.ReleaseNotes != "" {
+		notes := info.ReleaseNotes
+		if len(notes) > 1016 {
+			notes = notes[:1013] + "..."
+		}
+		notes = "```\n" + notes + "\n```"
+		fields = append(fields, map[string]string{
+			"name":  "Release Notes",
+			"value": notes,
+		})
+	}
+
 	embed := map[string]interface{}{
-		"title": fmt.Sprintf("Updated: %s", appName),
-		"url":   url,
-		"fields": []map[string]string{
-			{
-				"name":   "New Version",
-				"value":  "`" + version + "`",
-				"inline": "true",
-			},
-			{
-				"name":   "Old Version",
-				"value":  "`" + oldVersion + "`",
-				"inline": "true",
-			},
+		"author": map[string]string{
+			"name": "New Update",
 		},
-		"color": 0x43b581,
-		"footer": map[string]string{
+		"title":  appName,
+		"url":    url,
+		"fields": fields,
+		"color":  0x43b581,
+	}
+
+	showFooter := cfg.ShowFooter == nil || *cfg.ShowFooter
+	if showFooter {
+		embed["footer"] = map[string]string{
 			"text": "github.com/b_nnett/appstore-monitor",
-		},
+		}
+	}
+
+	if info.IconURL != "" {
+		embed["thumbnail"] = map[string]string{
+			"url": info.IconURL,
+		}
 	}
 	payload := map[string]interface{}{
 		"embeds": []interface{}{embed},
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(webhookURL, "application/json", strings.NewReader(string(data)))
+	resp, err := http.Post(cfg.WebhookURL, "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		return err
 	}
@@ -158,40 +236,37 @@ func main() {
 
 	initLogger()
 	for _, app := range cfg.Apps {
-		html, status, err := fetch(app.URL)
+		var info *VersionInfo
+		var status int
+
+		switch app.Type {
+		case "appstore":
+			info, status, err = fetchAppStoreVersion(app.URL)
+		case "playstore":
+			info, status, err = fetchPlayStoreVersion(app.URL)
+		default:
+			continue
+		}
 
 		if err != nil {
 			fmt.Printf("Error fetching %s: %v\n", app.Name, err)
 			continue
 		}
 
-		var version string
-
-		switch app.Type {
-		case "appstore":
-			version, err = parseAppStoreVersion(html)
-		case "playstore":
-			version, err = parsePlayStoreVersion(html)
-		default:
-			continue
-		}
-
-		if err != nil {
-			fmt.Printf("Error parsing %s: %v\n", app.Name, err) // should probably send a webhook here too, but alas
-			continue
-		}
-
-		if state[app.Name] != version {
-			fmt.Printf("New version for %s: %s\n", app.Name, version)
-			err = sendDiscordWebhook(cfg.WebhookURL, app.Name, version, state[app.Name], app.URL)
+		if state[app.Name] != info.Version {
+			fmt.Printf("New version for %s: %s\n", app.Name, info.Version)
+			if info.ReleaseNotes != "" {
+				fmt.Printf("  Notes: %s\n", info.ReleaseNotes)
+			}
+			err = sendDiscordWebhook(cfg, app.Name, info, state[app.Name], app.URL)
 			if err != nil {
 				fmt.Printf("Webhook error: %v\n", err)
 			}
-			state[app.Name] = version
+			state[app.Name] = info.Version
 			changed = true
 		}
 
-		logRequest(app.URL, status, version)
+		logRequest(app.URL, status, info.Version)
 	}
 
 	if changed {
