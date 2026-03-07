@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -40,7 +40,7 @@ func logRequest(url string, status int, version string) {
 }
 
 func loadConfig() (*AppConfig, error) {
-	data, err := ioutil.ReadFile("config.json")
+	data, err := os.ReadFile("config.json")
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func loadConfig() (*AppConfig, error) {
 }
 
 func loadState() (State, error) {
-	data, err := ioutil.ReadFile("state.json")
+	data, err := os.ReadFile("state.json")
 	if os.IsNotExist(err) {
 		return State{}, nil
 	}
@@ -67,22 +67,27 @@ func saveState(state State) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile("state.json", data, 0644)
+	return os.WriteFile("state.json", data, 0644)
 }
 
 func fetch(url string) (string, int, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", 0, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	return string(body), resp.StatusCode, err
 }
 
 func parseAppStoreVersion(html string) (string, error) {
-	re := regexp.MustCompile(`<p class="l-column small-6 medium-12 whats-new__latest__version">Version ([^<]+)</p>`)
+	re := regexp.MustCompile(`<h4[^>]*>Version ([^<]+)</h4>`)
 	match := re.FindStringSubmatch(html)
 	if len(match) < 2 {
 		return "", fmt.Errorf("version not found")
