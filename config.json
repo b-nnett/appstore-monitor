@@ -1,15 +1,28 @@
 {
   "webhook_url": "",
+  "show_footer": true,
+  "notify_on_first_seen": false,
   "apps": [
     {
-      "name": "Grindr iOS",
-      "type": "appstore",
-      "url": "https://apps.apple.com/us/app/grindr-gay-dating-chat/id319881193"
+      "name": "Depop Android",
+      "type": "playstore",
+      "package_id": "com.depop",
+      "country": "gb",
+      "language": "en"
     },
     {
-      "name": "Spotify Android",
+      "name": "eBay Android",
       "type": "playstore",
-      "url": "https://play.google.com/store/apps/details?id=com.spotify.music&hl=en"
+      "package_id": "com.ebay.mobile",
+      "country": "gb",
+      "language": "en"
+    },
+    {
+      "name": "Vinted Android",
+      "type": "playstore",
+      "package_id": "fr.vinted",
+      "country": "gb",
+      "language": "en"
     }
   ]
 }
