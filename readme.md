@@ -1,31 +1,58 @@
 # App Store Monitor
 
-App Store Monitor is a tool for tracking updates to apps on the Apple App Store and Google Play Store. It notifies you via Discord webhook when a new version of a monitored app is released, helping you stay ahead of API changes and minimize downtime for your projects.
+A small local monitor for Apple App Store and Google Play releases. The default
+configuration watches the Android apps for Depop, eBay, and Vinted and sends a
+Discord message when their Play Store metadata changes.
 
-## Features
+Google Play does not expose a universal version for every app and device. The
+monitor therefore tracks both the published version and the Play Store's
+updated date. This means eBay is still detected when Google omits its version.
 
-- **Supports Apple App Store & Google Play Store**
-- **Customizable app list** via `config.json`
-- **Discord webhook notifications** for new app versions
-- **Persistent state tracking** to avoid duplicate alerts
-- **Easy scheduling** with cron or other job schedulers
+## Local setup
 
-## Usage
+Requirements: Go 1.24 or later and a Discord webhook.
 
-1. **Configure your apps and webhook**  
-   Edit `config.json` to specify the apps you want to monitor and your Discord webhook URL.
+```sh
+git clone https://github.com/b-nnett/appstore-monitor.git
+cd appstore-monitor
+cp config.json config.local.json
+chmod 600 config.local.json
+```
 
-2. **Run the monitor**  
-   Execute the tool manually or schedule it using cron for periodic checks (e.g., every hour).
+Put the webhook in `config.local.json` under `webhook_url`, then build and run:
 
-3. **Receive notifications**
-    When a new version is detected, you'll receive a message in your Discord channel.
+```sh
+go build -o appstore-monitor .
+APPSTORE_MONITOR_CONFIG=config.local.json ./appstore-monitor
+```
 
-## Recommendations
+The webhook can instead be supplied with `DISCORD_WEBHOOK_URL`. Paths for the
+config, state, and log can be overridden with `APPSTORE_MONITOR_CONFIG`,
+`APPSTORE_MONITOR_STATE`, and `APPSTORE_MONITOR_LOG`.
 
-To avoid rate limiting, schedule checks no more frequently than once per hour.
-Review and update your app list in config.json as needed.
+The first successful run seeds `state.json` without sending three noisy
+first-seen alerts. Later changes generate notifications. If Discord delivery
+fails, state is deliberately left unchanged so the next run retries it.
 
-## Contributions
+## Hourly local schedule
 
-I use this personally, so I will be fairly active in maintaining it. If you're keen for changes (cache bypasses, notifications on other platforms, move to app API's rather than web), feel free to make a PR.
+Edit the path below, then add this entry with `crontab -e`:
+
+```cron
+# App Store Monitor — hourly Android marketplace checks (Depop, eBay, Vinted)
+0 * * * * cd /absolute/path/to/appstore-monitor && APPSTORE_MONITOR_CONFIG=config.local.json ./appstore-monitor >> cron.log 2>&1
+```
+
+This runs at minute zero of every hour. No hosted scheduler or CI service is
+required.
+
+## Configuration
+
+Each Google Play entry accepts:
+
+- `package_id`: the Android application ID.
+- `country`: the two-letter Play Store market, defaulting to `gb`.
+- `language`: the two-letter language, defaulting to `en`.
+
+Apple App Store URLs remain supported for other personal configurations.
+`notify_on_first_seen` can be enabled if initial alerts are desired.

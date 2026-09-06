@@ -1,2 +1,6 @@
-state.json
+.DS_Store
 app.log
+appstore-monitor
+config.local.json
+cron.log
+state.json
